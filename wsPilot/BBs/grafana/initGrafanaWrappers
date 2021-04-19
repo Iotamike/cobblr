@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+python3 grafana-zmq-wraper.py 3003 client_app_one &
+python3 grafana-zmq-wraper.py 3004 client_app_two &
+python3 grafana-zmq-wraper.py 3005 client_app_three &
+python3 grafana-zmq-wraper.py 3006 client_app_four &
+python3 grafana-zmq-wraper.py 3007 client_app_five &

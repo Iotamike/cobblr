@@ -1,0 +1,8 @@
+LICENCE
+README.md
+pyproject.toml
+setup.cfg
+src/cobblr.egg-info/PKG-INFO
+src/cobblr.egg-info/SOURCES.txt
+src/cobblr.egg-info/dependency_links.txt
+src/cobblr.egg-info/top_level.txt

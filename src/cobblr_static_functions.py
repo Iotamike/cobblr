@@ -72,3 +72,23 @@ def _relay(ins, outs, sides, prefix, swap_ids=False):
     outs.send_multipart(msg)
     sides.send_multipart([prefix] + msg)
 
+
+def list_or_string_encode(list_or_string):
+    if type(list_or_string) == list:
+        out_list = []
+        for word in list_or_string:
+            if type(word) == str:
+                out_list.append(str.encode(word))
+            elif type(word) == bytes:
+                out_list.append(word)
+            else:
+                raise Exception("message must consist of string or byte objects")
+        out_msg = out_list
+    elif type(list_or_string) == str:
+        out_msg = [str.encode(list_or_string)]
+    elif type(list_or_string) == bytes:
+        out_msg = [list_or_string]
+    else:
+        raise Exception("Input should be a string, byte object\n or a list of byte or string objects")
+
+    return out_msg

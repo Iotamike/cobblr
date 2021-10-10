@@ -2,7 +2,7 @@
 import zmq
 from zmq.asyncio import Poller
 
-from cobblr.cobblr_debug import db_print
+from ..cobblr_debug import db_print
 
 
 # This class contains all the functionality for the zeroMQ router

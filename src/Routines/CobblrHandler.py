@@ -1,15 +1,20 @@
 import asyncio
+import threading
 import time
 import zmq
 from enum import Enum
 from zmq.asyncio import Poller
 
-from cobblr.Routines.CobblrRouter import CobblrRouter
-from cobblr.Routines.CobblrDealer import CobblrDealer
+from .CobblrRouter import CobblrRouter
+from .CobblrDealer import CobblrDealer
+from .CobblrPubSubProxy import CobblrPubSubProxy
+from .CobblrPublish import CobblrPublish
+from .CobblrSubscribe import CobblrSubscribe
+from .CobblrHeartbeat import CobblrHeartbeat
 
-from cobblr.config import AppType, DEFAULT_PORT
-from cobblr.cobblr_debug import db_print
-from cobblr.cobblr_static_functions import zpipe
+from ..config import AppType, DEFAULT_PORT
+from ..cobblr_debug import db_print
+from ..cobblr_static_functions import zpipe, list_or_string_encode
 
 
 class HandlerStates(Enum):
@@ -34,8 +39,12 @@ MSG_PRIORITY = {b"SHUTDOWN": 0,
                 b"ACK_ROUTE": 4,
                 b"GET_CONNS": 5,
                 b"GET_MSG": 5,
+                b"GET_SUB": 5,
+                b"SUBSCRIBE": 5,
                 b"SEND_TO": 6,
-                b"MSG_FROM": 6, }
+                b"MSG_FROM": 6,
+                b"PUB_MSG": 6,
+                }
 
 
 class CobblrHandler:
@@ -57,6 +66,15 @@ class CobblrHandler:
         # placeholder poller
         self.poller = None
 
+        # placeholder objects for pub-sub
+        self.pubsub_listener = None
+        self.pubsub_proxy = None
+        self.pubsub_proxy_thread = None
+        self.publisher = None
+        self.subscriber = None
+        self.subscriber_pipe = None
+        self.heartbeat = None
+
         # create internal housekeeping objects
         """
         NEEDS:
@@ -68,10 +86,12 @@ class CobblrHandler:
         self.ports = []
         self.has_router = False
         self.message_queue = []
+        self.sub_message_queue = []
         self.alive = True
         self.handler_queue = asyncio.PriorityQueue()
 
-        self.handler_state = HandlerStates(1)
+        # create handler state object
+        self.handler_state = HandlerStates.INIT
 
     async def start(self):
         await self.queue.put(self.run_first())
@@ -102,14 +122,31 @@ class CobblrHandler:
 
         if self.app_type == AppType.SERVICE_APP:
             await self.create_router(DEFAULT_PORT)
+            # create a pub-sub proxy to run in a separate thread
+            # N.B. ok to use zpipe here as we are sharing context between threads
+            self.pubsub_listener = zpipe(self.context)
+            self.pubsub_proxy = CobblrPubSubProxy(context=self.context, pipe=self.pubsub_listener[0])
+            self.pubsub_proxy_thread = threading.Thread(target=self.pubsub_proxy.run())
+            self.pubsub_proxy_thread.start()
 
         elif self.app_type == AppType.CLIENT_APP:
             await self.create_dealer("service", DEFAULT_PORT)
             self.ports.append(DEFAULT_PORT)
+            # create a publisher. No need to do anything fancy here. We only ever send on this socket.
+            self.publisher = CobblrPublish(self.context)
+            # create a subscriber
+            await self.create_subscriber()
+            # create a heartbeat: can just thread this out, no need to async.
+            # It's just a timer that hits the publisher every now and then
+            self.heartbeat = CobblrHeartbeat(self)
+            # don't need a class variable to hold this
+            # it should get garbage collected when we call self.heartbeat.end()
+            hb_thread = threading.Thread(target=self.heartbeat.start())
+            hb_thread.start()
 
         db_print("redefine")
 
-        self.handler_state = HandlerStates(0)
+        self.handler_state = HandlerStates.READY
         await self.queue.put(self.run_method(self.receive_messages))
         await self.queue.put(self.run_method(self.handle_messages))
 
@@ -137,6 +174,12 @@ class CobblrHandler:
                 db_print("dealer %s pipe recv: %s" % (key, message))
 
                 await self.handler_queue.put((MSG_PRIORITY[message[0]], ["dealer", key] + [*message]))
+
+        if self.subscriber_pipe in event:
+            message = await self.subscriber_pipe.recv_multipart()
+            db_print("sub msg recv: %s" % message)
+
+            self.sub_message_queue.append(message)
 
         if self.api_pipe in event:
             message = await self.api_pipe.recv_multipart()
@@ -221,6 +264,12 @@ class CobblrHandler:
                     to = message[1].decode()
                     await self.send_to(to, message[2:])
 
+                if message[0] == b"PUB_MSG":
+                    self.publisher.pub(message[1], message[2:])
+
+                if message[0] == b"SUBSCRIBE":
+                    self.subscriber.sub(message[1])
+
                 if message[0] == b"GET_CONNS":
                     con_dealer_list = []
                     for dlr_name in list(self.dealers.keys()):
@@ -234,6 +283,14 @@ class CobblrHandler:
                     else:
                         message = self.message_queue.pop()
                         await self.api_pipe.send_multipart([b"MSG"] + [str.encode("%s" % number)] + message)
+
+                if message[0] == b"GET_SUB":
+                    number = len(self.sub_message_queue)
+                    if number == 0:
+                        await self.api_pipe.send(b"NO_SUB")
+                    else:
+                        message = self.message_queue.pop()
+                        await self.api_pipe.send_multipart([b"SUB"] + [str.encode("%s" % number)] + message)
 
                 if message[0] == b"REGISTER":
                     db_print("registering(handler)")
@@ -343,9 +400,19 @@ class CobblrHandler:
         else:
             await self.handler_queue.put((priority, message))
 
+    # *************************************************
+    # Create a router object
+    # *************************************************
+
     async def create_router(self, port):
+        # store state
+        temp_state = self.handler_state
+        # set state to creating router
+        self.handler_state = HandlerStates.CREATE_ROUTER
         if self.has_router:
             db_print("router already exists")
+            # restore state
+            self.handler_state = temp_state
             return 1
         else:
             self.router = CobblrRouter(self.queue, self.context, self.app_name, port, self.router_pipe[0])
@@ -353,14 +420,34 @@ class CobblrHandler:
             self.ports.append(port)
             self.has_router = True
             self.poller.register(self.router_pipe[1], zmq.POLLIN)
+            # restore state
+            self.handler_state = temp_state
 
     async def create_dealer(self, dlr_name, port):
+        # store state
+        temp_state = self.handler_state
+        # set state to creating router
+        self.handler_state = HandlerStates.CREATE_DEALER
         db_print("creating dealer %s in app %s on port %s" % (dlr_name, self.app_name, port))
         dealer_pipe = zpipe(self.context)
         self.dealers[dlr_name] = dealer_pipe[1]
+        # now, technically the dealer threads aren't real threads
+        # that's why we are using async - otherwise for N interconnected apps you have N squared threads
+        # which could get messy quickly
         self.dealer_threads[dlr_name] = CobblrDealer(self.queue, self.context, self.app_name, port, dealer_pipe[0])
         await self.dealer_threads[dlr_name].start()
         self.poller.register(dealer_pipe[1], zmq.POLLIN)
+        # restore state
+        self.handler_state = temp_state
+
+    async def create_subscriber(self):
+        if not self.subscriber:
+            self.subscriber_pipe = zpipe(self.context)
+            self.subscriber = CobblrSubscribe(self.context, self.queue, self.subscriber_pipe[0])
+            await self.subscriber.start()
+            self.poller.register(self.subscriber_pipe[1], zmq.POLLIN)
+        else:
+            db_print("Subscriber already exists!")
 
     def next_port(self):
         port_num = DEFAULT_PORT
@@ -371,35 +458,30 @@ class CobblrHandler:
                 self.ports.append(port_num)
                 return port_num
 
+    def publish_on(self, topic, message):
+        out_msg = list_or_string_encode(message)
+        out_topic = list_or_string_encode(topic)
+        try:
+            self.publisher.pub(out_topic,out_msg)
+        except zmq.ZMQError as e:
+            db_print("zmq error: %s \n" % e)
+            return 1
+
+        return 0
+
     async def send_to(self, to, message):
 
-        err = False
         try:
             dealer = self.dealers[to]
         except KeyError as e:
             db_print("Invalid destination name %s" % e)
-            err = True
+            return 1
 
-        if not err:
-            if type(message) == list:
-                out_list = []
-                for word in message:
-                    if type(word) == str:
-                        out_list.append(str.encode(word))
-                    elif type(word) == bytes:
-                        out_list.append(word)
-                    else:
-                        raise Exception("message must consist of string or byte objects")
-                out_msg = [b"SEND"] + out_list
-            elif type(message) == str:
-                out_msg = [b"SEND"] + [str.encode(message)]
-            elif type(message) == bytes:
-                out_msg = [b"SEND"] + [message]
-            else:
-                raise Exception("Input should be a string, byte object\n or a list of byte or string objects")
+        out_msg = list_or_string_encode(message)
+        try:
+            await dealer.send_multipart([b"SEND"] + out_msg)
+        except zmq.ZMQError as e:
+            db_print("zmq error: %s \n" % e)
+            return 1
 
-            try:
-                await dealer.send_multipart(out_msg)
-            except zmq.ZMQError as e:
-                db_print("zmq error: %s \n" % e)
-                return 1
+        return 0

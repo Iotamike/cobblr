@@ -1,5 +1,5 @@
 
-from cobblr.cobblr_debug import db_print
+from ..cobblr_debug import db_print
 
 
 class CobblrRoutine:

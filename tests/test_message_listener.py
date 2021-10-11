@@ -1,4 +1,4 @@
-from src.cobblr import CobblrClient
+from src.cobblr.cobblr import CobblrClient
 from time import sleep
 import sys
 

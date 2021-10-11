@@ -1,7 +1,5 @@
-from src.cobblr import CobblrBroker
+from src.cobblr.cobblr import CobblrBroker
 from time import sleep
-
-from threading import Thread
 
 
 def test_broker(timer=None):

@@ -1,6 +1,6 @@
 import zmq
 
-from src.cobblr import CobblrClient
+from src.cobblr.cobblr import CobblrClient
 from time import sleep
 from datetime import datetime
 from random import randint

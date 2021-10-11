@@ -17,12 +17,12 @@ Please check back soon!
 
 ## API
 
-    from cobblr import CobblrBroker
+    from cobblr.cobblr import CobblrBroker
     cb = CobblrBroker
 
 Create and start a broker
 
-    from cobblr import CobblrClient
+    from cobblr.cobblr import CobblrClient
     cl = CobblrClient("cl_test")
 
 Create and start a client named `cl_test`
@@ -31,7 +31,7 @@ Create and start a client named `cl_test`
 
 Register client `cl_test` with the running broker
 
-    from cobblr import CobblrClient
+    from cobblr.cobblr import CobblrClient
     cr = CobblrClient("cr_test")
     cr.register()
 

@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: cobblr
-Version: 0.0.1
+Version: 0.1.2
 Summary: pyzmq broker and client handlers with name based addressing
 Home-page: https://github.com/Iotamike/cobblr
 Author: Michael McNally

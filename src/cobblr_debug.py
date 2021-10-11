@@ -8,7 +8,7 @@ import inspect
 import os
 from datetime import datetime
 
-DEBUG = True
+DEBUG = False
 
 TIMEOUT = 10.0
 

@@ -64,7 +64,9 @@ The inbox is cleared on reading.
 
     cr.end
 
-Ends client `cr_test`. **Not yet implemented!**
+Ends client `cr_test`.
+
+**API for pub-sub to be added soon**
 
 ## Features List
 
@@ -73,11 +75,11 @@ Ends client `cr_test`. **Not yet implemented!**
 - [ ] Multiple IP and Network support
 - [x] Request a connection to another named client
 - [x] Request - Response messaging pattern between named clients
-- [ ] Publish - Subscribe messaging pattern
+- [x] Publish - Subscribe messaging pattern
 - [x] Simple state machine with task prioritisation
 - [x] Asynchronous background operation
 - [ ] Smooth shutdown and restart
-- [ ] Heartbeat for network status and awareness
+- [x] Heartbeat for network status and awareness
 - [ ] Backup broker
 - [ ] Network configuration save and load
 - [ ] Message encryption

@@ -14,7 +14,7 @@ def test_broker(timer=None):
     br.start()
 
     if timer:
-        sleep(10)
+        sleep(timer)
         br.end()
 
 

@@ -80,9 +80,9 @@ class CobblrBroker:
 
     async def event_loop_manager(self):
         next_cobblr_routine = await self.queue.get()
-        db_print("loop number %s" % self.loop_counter)
+        # db_print("loop number %s" % self.loop_counter) # seriously keep this commented out
         self.loop_counter += 1
-        db_print(next_cobblr_routine)
+        # db_print(next_cobblr_routine) # ^^ ditto ^^
         self.loop.create_task(next_cobblr_routine)
         self.loop.create_task(self.event_loop_manager())
 
@@ -222,9 +222,9 @@ class CobblrClient:
 
     async def event_loop_manager(self):
         next_cobblr_routine = await self.queue.get()
-        db_print("loop number %s" % self.loop_counter)
+        # db_print("loop number %s" % self.loop_counter) # seriously keep this commented out
         self.loop_counter += 1
-        db_print(next_cobblr_routine)
+        # db_print(next_cobblr_routine) # ^^ ditto ^^
         self.loop.create_task(next_cobblr_routine)
         self.loop.create_task(self.event_loop_manager())
 
@@ -258,6 +258,39 @@ class CobblrClient:
             return messages
         else:
             return ["no_msg"]
+
+    def get_subs(self):
+        sub_messages = []
+
+        while True:
+
+            self.local_pipe.send(b"GET_SUB")
+
+            message = self.local_pipe.recv_multipart()
+            # stop running if there are no handled messages
+            if message[0] == b"NO_SUB":
+                break
+            else:
+                temp_msg = []
+                for word in message[1:]:
+                    temp_msg.append(word)
+
+                sub_messages.append(temp_msg)
+
+        if len(sub_messages) > 0:
+            return sub_messages
+        else:
+            return ["no_sub"]
+
+    def subscribe(self, sub):
+        send_message = [b"SUBSCRIBE", str.encode("%s" % sub)]
+        self.local_pipe.send_multipart(send_message)
+
+    def publish(self, pub, message):
+        send_message = [b"PUB_MSG", str.encode("%s" % pub)]
+        for word in message:
+            send_message.append(str.encode("%s" % word))
+        self.local_pipe.send_multipart(send_message)
 
     def send_message(self, to, message):
         send_message = [b"SEND_TO", str.encode("%s" % to)]

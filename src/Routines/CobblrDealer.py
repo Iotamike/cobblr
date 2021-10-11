@@ -42,6 +42,8 @@ class CobblrDealer:
         await self.queue.put(self.run_method())
 
     async def run_method(self):
+        if not self.ongoing:
+            return 0
         await self.method()
         if self.ongoing:
             await self.queue.put(self.run_method())

@@ -69,7 +69,6 @@ class CobblrHandler:
         # placeholder objects for pub-sub
         self.pubsub_listener = None
         self.pubsub_proxy = None
-        self.pubsub_proxy_thread = None
         self.publisher = None
         self.subscriber = None
         self.subscriber_pipe = None
@@ -97,11 +96,10 @@ class CobblrHandler:
         await self.queue.put(self.run_first())
 
     async def run_method(self, method):
-        db_print("run_method_starts")
+        if not self.ongoing:
+            return 0
         await method()
-        db_print("self_method_finished")
         if self.ongoing:
-            db_print("next_method")
             await self.queue.put(self.run_method(method))
 
     def end(self):
@@ -123,26 +121,22 @@ class CobblrHandler:
         if self.app_type == AppType.SERVICE_APP:
             await self.create_router(DEFAULT_PORT)
             # create a pub-sub proxy to run in a separate thread
-            # N.B. ok to use zpipe here as we are sharing context between threads
-            self.pubsub_listener = zpipe(self.context)
-            self.pubsub_proxy = CobblrPubSubProxy(context=self.context, pipe=self.pubsub_listener[0])
-            self.pubsub_proxy_thread = threading.Thread(target=self.pubsub_proxy.run())
-            self.pubsub_proxy_thread.start()
+            # implement a pipe to listen on this
+            # self.pubsub_listener = zpipe(self.context)
+            await self.create_pub_sub_proxy() # defaults to no listener pipe
 
         elif self.app_type == AppType.CLIENT_APP:
             await self.create_dealer("service", DEFAULT_PORT)
             self.ports.append(DEFAULT_PORT)
-            # create a publisher. No need to do anything fancy here. We only ever send on this socket.
-            self.publisher = CobblrPublish(self.context)
+            # Although pub, sub and heartbeat are simpler in operation that request - response
+            # we need async here because the context is an async context - it has to live on an event loop
+            # this will help in adding more complex behaviour in the future
+            # create a publisher
+            await self.create_publisher()
             # create a subscriber
             await self.create_subscriber()
-            # create a heartbeat: can just thread this out, no need to async.
-            # It's just a timer that hits the publisher every now and then
-            self.heartbeat = CobblrHeartbeat(self)
-            # don't need a class variable to hold this
-            # it should get garbage collected when we call self.heartbeat.end()
-            hb_thread = threading.Thread(target=self.heartbeat.start())
-            hb_thread.start()
+            # create a heartbeat
+            await self.create_heartbeat()
 
         db_print("redefine")
 
@@ -156,11 +150,11 @@ class CobblrHandler:
         :return: no return
         """
 
-        db_print("receiver waiting \n")
+        # db_print("receiver waiting \n")
 
         poll_in = await self.poller.poll()
         event = dict(poll_in)
-        db_print("polled - state = %s\n" % self.handler_state)
+        # db_print("polled - state = %s\n" % self.handler_state)
 
         if self.router_pipe[1] in event:
             message = await self.router_pipe[1].recv_multipart()
@@ -175,8 +169,8 @@ class CobblrHandler:
 
                 await self.handler_queue.put((MSG_PRIORITY[message[0]], ["dealer", key] + [*message]))
 
-        if self.subscriber_pipe in event:
-            message = await self.subscriber_pipe.recv_multipart()
+        if self.subscriber_pipe[1] in event:
+            message = await self.subscriber_pipe[1].recv_multipart()
             db_print("sub msg recv: %s" % message)
 
             self.sub_message_queue.append(message)
@@ -184,7 +178,7 @@ class CobblrHandler:
         if self.api_pipe in event:
             message = await self.api_pipe.recv_multipart()
 
-            db_print("api pipe recv: %s" % message)
+            # db_print("api pipe recv: %s" % message)
 
             await self.handler_queue.put((MSG_PRIORITY[message[0]], ["api"] + [*message]))
 
@@ -194,8 +188,8 @@ class CobblrHandler:
         :return: no return
         """
 
-        db_print("handler waiting \n")
-        db_print("state = %s \n" % self.handler_state)
+        # db_print("handler waiting \n")
+        # db_print("state = %s \n" % self.handler_state)
 
         # **********************
         # GET THE NEXT MESSAGE :
@@ -203,8 +197,8 @@ class CobblrHandler:
 
         (priority, message) = await self.handler_queue.get()
 
-        db_print("handler next message = %s with priority %s\n" % (message, priority))
-        db_print("state = %s \n" % self.handler_state)
+        # db_print("handler next message = %s with priority %s\n" % (message, priority))
+        # db_print("state = %s \n" % self.handler_state)
 
         # *************************************
         # Messages to be handled in READY STATE
@@ -265,7 +259,7 @@ class CobblrHandler:
                     await self.send_to(to, message[2:])
 
                 if message[0] == b"PUB_MSG":
-                    self.publisher.pub(message[1], message[2:])
+                    await self.publisher.pub(message[1], message[2:])
 
                 if message[0] == b"SUBSCRIBE":
                     self.subscriber.sub(message[1])
@@ -289,7 +283,7 @@ class CobblrHandler:
                     if number == 0:
                         await self.api_pipe.send(b"NO_SUB")
                     else:
-                        message = self.message_queue.pop()
+                        message = self.sub_message_queue.pop()
                         await self.api_pipe.send_multipart([b"SUB"] + [str.encode("%s" % number)] + message)
 
                 if message[0] == b"REGISTER":
@@ -405,14 +399,8 @@ class CobblrHandler:
     # *************************************************
 
     async def create_router(self, port):
-        # store state
-        temp_state = self.handler_state
-        # set state to creating router
-        self.handler_state = HandlerStates.CREATE_ROUTER
         if self.has_router:
             db_print("router already exists")
-            # restore state
-            self.handler_state = temp_state
             return 1
         else:
             self.router = CobblrRouter(self.queue, self.context, self.app_name, port, self.router_pipe[0])
@@ -420,14 +408,8 @@ class CobblrHandler:
             self.ports.append(port)
             self.has_router = True
             self.poller.register(self.router_pipe[1], zmq.POLLIN)
-            # restore state
-            self.handler_state = temp_state
 
     async def create_dealer(self, dlr_name, port):
-        # store state
-        temp_state = self.handler_state
-        # set state to creating router
-        self.handler_state = HandlerStates.CREATE_DEALER
         db_print("creating dealer %s in app %s on port %s" % (dlr_name, self.app_name, port))
         dealer_pipe = zpipe(self.context)
         self.dealers[dlr_name] = dealer_pipe[1]
@@ -437,8 +419,6 @@ class CobblrHandler:
         self.dealer_threads[dlr_name] = CobblrDealer(self.queue, self.context, self.app_name, port, dealer_pipe[0])
         await self.dealer_threads[dlr_name].start()
         self.poller.register(dealer_pipe[1], zmq.POLLIN)
-        # restore state
-        self.handler_state = temp_state
 
     async def create_subscriber(self):
         if not self.subscriber:
@@ -449,6 +429,29 @@ class CobblrHandler:
         else:
             db_print("Subscriber already exists!")
 
+    async def create_publisher(self):
+        if not self.publisher:
+            self.publisher = CobblrPublish(self.context)
+            await self.publisher.start()
+        else:
+            db_print("Publisher already exists")
+
+    async def create_heartbeat(self):
+        if not self.heartbeat:
+            self.heartbeat = CobblrHeartbeat(self)
+            await self.heartbeat.start()
+        else:
+            db_print("Heartbeat already exists")
+
+    async def create_pub_sub_proxy(self, pipe=None):
+        if not self.pubsub_proxy:
+            self.pubsub_proxy = CobblrPubSubProxy(self.context, self.queue, pipe)
+            await self.pubsub_proxy.start()
+            if pipe:
+                self.poller.register(pipe, zmq.POLLIN)
+        else:
+            db_print("pub_sub_proxy already exists")
+
     def next_port(self):
         port_num = DEFAULT_PORT
         while True:
@@ -458,11 +461,11 @@ class CobblrHandler:
                 self.ports.append(port_num)
                 return port_num
 
-    def publish_on(self, topic, message):
+    async def publish_on(self, topic, message):
         out_msg = list_or_string_encode(message)
         out_topic = list_or_string_encode(topic)
         try:
-            self.publisher.pub(out_topic,out_msg)
+            await self.publisher.pub(out_topic, out_msg)
         except zmq.ZMQError as e:
             db_print("zmq error: %s \n" % e)
             return 1

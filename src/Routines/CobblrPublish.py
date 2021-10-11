@@ -13,15 +13,19 @@ class CobblrPublish:
 
         self.ongoing = True
 
+        self.publish = None
+
+    async def start(self):
         # create 0MQ publish socket
         self.publish = self.context.socket(zmq.PUB)
-        self.publish.bind("tcp://*:%s" % DEFAULT_XSUB_PORT)
+        self.publish.connect("tcp://localhost:%s" % DEFAULT_XSUB_PORT)
+        db_print("publish socket connected")
 
-    def pub(self, topic, message):
+    async def pub(self, topic, message):
         out_msg = list_or_string_encode(message)
         out_topic = list_or_string_encode(topic)
         # N.B. list_or_string_encode always returns a list
-        self.publish.send_multipart(out_topic + out_msg)
+        await self.publish.send_multipart(out_topic + out_msg)
 
 
 

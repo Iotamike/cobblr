@@ -47,8 +47,7 @@ class CobblrSubscribe:
         if self.subscriber in event:
             message = await self.subscriber.recv_multipart()
             db_print("subscriber recv: %s" % message)
-            pipe_msg = list_or_string_encode(message)
-            await self.pipe.send_multipart(pipe_msg)
+            await self.pipe.send_multipart(message)
 
     def sub(self, topic):
         self.subscriber.subscribe(topic)
